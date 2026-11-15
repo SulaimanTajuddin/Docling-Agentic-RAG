@@ -40,13 +40,7 @@ def extract_sections(filename: str, content: bytes) -> list[tuple[str, str]]:
         raise ValueError(f"Unsupported file type: {extension or '(no extension)'}")
 
     if extension == ".pdf":
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(content))
-        sections = [
-            (f"Page {number}", page.extract_text() or "")
-            for number, page in enumerate(reader.pages, start=1)
-        ]
+        sections = _extract_pdf_sections(content)
     elif extension == ".docx":
         from docx import Document
 
@@ -80,6 +74,49 @@ def extract_sections(filename: str, content: bytes) -> list[tuple[str, str]]:
         sections = [("Document", content.decode("utf-8-sig"))]
 
     return [(location, text.strip()) for location, text in sections if text.strip()]
+
+
+def _extract_pdf_sections(content: bytes) -> list[tuple[str, str]]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(content))
+    page_texts = [page.extract_text() or "" for page in reader.pages]
+    pages_needing_ocr = [
+        index for index, text in enumerate(page_texts) if not text.strip()
+    ]
+    if pages_needing_ocr:
+        try:
+            import pymupdf
+            import pytesseract
+        except ImportError as error:
+            raise RuntimeError(
+                "OCR support requires the pymupdf and pytesseract packages. "
+                "Run `python -m pip install -r requirements.txt`."
+            ) from error
+
+        from pytesseract import TesseractNotFoundError
+
+        tesseract_cmd = os.getenv("TESSERACT_CMD")
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        try:
+            pytesseract.get_tesseract_version()
+        except TesseractNotFoundError as error:
+            raise RuntimeError(
+                "Tesseract OCR was not found. Install Tesseract and add it to PATH, "
+                "or set the TESSERACT_CMD environment variable to its executable."
+            ) from error
+
+        with pymupdf.open(stream=content, filetype="pdf") as document:
+            for index in pages_needing_ocr:
+                pixmap = document.load_page(index).get_pixmap(dpi=300, alpha=False)
+                image = io.BytesIO(pixmap.tobytes("png"))
+                page_texts[index] = pytesseract.image_to_string(image)
+
+    return [
+        (f"Page {number}", text)
+        for number, text in enumerate(page_texts, start=1)
+    ]
 
 
 def split_into_chunks(text: str, size: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLAP) -> list[str]:

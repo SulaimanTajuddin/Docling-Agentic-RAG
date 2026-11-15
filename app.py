@@ -19,7 +19,10 @@ with st.sidebar:
         "Upload documents",
         type=sorted(extension.lstrip(".") for extension in SUPPORTED_EXTENSIONS),
         accept_multiple_files=True,
-        help="Supported: PDF, DOCX, XLSX, CSV, TXT, and Markdown.",
+        help=(
+            "Supported: PDF, DOCX, XLSX, CSV, TXT, and Markdown. Scanned PDFs "
+            "are OCR'd when Tesseract is installed."
+        ),
     )
     if uploads and st.button("Index uploaded documents"):
         for upload in uploads:
