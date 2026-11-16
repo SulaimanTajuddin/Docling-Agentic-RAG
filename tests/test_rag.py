@@ -1,12 +1,19 @@
-import io
+import json
+import os
+import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-from pypdf import PdfWriter
-from rag import DocumentStore, extract_sections, split_into_chunks
+from rag import (
+    DocumentStore,
+    _agent_chat_completion,
+    agentic_answer,
+    extract_sections,
+    split_into_chunks,
+)
 
 
 class ExtractionTests(unittest.TestCase):
@@ -24,48 +31,37 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_sections("drawing.dwg", b"")
 
-    def test_ocr_extracts_text_from_pdf_pages_without_text(self):
-        writer = PdfWriter()
-        writer.add_blank_page(width=72, height=72)
-        pdf = io.BytesIO()
-        writer.write(pdf)
+    def test_docling_converts_structured_files_and_releases_input(self):
+        docling = types.ModuleType("docling")
+        docling.__path__ = []
+        datamodel = types.ModuleType("docling.datamodel")
+        datamodel.__path__ = []
+        base_models = types.ModuleType("docling.datamodel.base_models")
+        base_models.DocumentStream = Mock(side_effect=lambda **kwargs: kwargs)
+        document_converter = types.ModuleType("docling.document_converter")
+        document_converter.DocumentConverter = Mock()
+        converter = Mock()
+        conversion = Mock()
+        conversion.document.export_to_markdown.return_value = "# Pump P-101"
+        converter.convert.return_value = conversion
+        document_converter.DocumentConverter.return_value = converter
 
-        pymupdf = MagicMock()
-        pdf_document = MagicMock()
-        pymupdf.open.return_value.__enter__.return_value = pdf_document
-        pixmap = Mock()
-        pixmap.tobytes.return_value = b"rendered page"
-        pdf_document.load_page.return_value.get_pixmap.return_value = pixmap
-
-        tesseract_not_found = type("TesseractNotFoundError", (RuntimeError,), {})
-        pytesseract = Mock()
-        pytesseract.TesseractNotFoundError = tesseract_not_found
-        pytesseract.pytesseract = types.SimpleNamespace(tesseract_cmd="tesseract")
-        pytesseract.get_tesseract_version.return_value = "5.0"
-        pytesseract.image_to_string.return_value = "Pump P-101 inspection interval"
-
-        with patch.dict(
-            "sys.modules",
-            {"pymupdf": pymupdf, "pytesseract": pytesseract},
-        ):
-            sections = extract_sections("scanned.pdf", pdf.getvalue())
-
+        modules = {
+            "docling": docling,
+            "docling.datamodel": datamodel,
+            "docling.datamodel.base_models": base_models,
+            "docling.document_converter": document_converter,
+        }
+        with patch.dict(sys.modules, modules):
             self.assertEqual(
-                sections,
-                [("Page 1", "Pump P-101 inspection interval")],
-            )
-            pytesseract.image_to_string.assert_called_once()
-            self.assertEqual(
-                pytesseract.image_to_string.call_args.args[0].read(),
-                b"rendered page",
-            )
-            pymupdf.open.assert_called_once_with(
-                stream=pdf.getvalue(), filetype="pdf"
+                extract_sections("manual.pdf", b"document bytes"),
+                [("Document", "# Pump P-101")],
             )
 
-            pytesseract.get_tesseract_version.side_effect = tesseract_not_found()
-            with self.assertRaisesRegex(RuntimeError, "Tesseract OCR was not found"):
-                extract_sections("scanned.pdf", pdf.getvalue())
+        base_models.DocumentStream.assert_called_once()
+        stream = base_models.DocumentStream.call_args.kwargs["stream"]
+        self.assertEqual(stream.read(), b"document bytes")
+        conversion.input.release.assert_called_once()
 
     def test_chunk_overlap_and_validation(self):
         chunks = split_into_chunks("one two three four five", size=3, overlap=1)
@@ -101,6 +97,72 @@ class DocumentStoreTests(unittest.TestCase):
             store.add_document("P-101-maintenance.txt", b"Scheduled work is documented here.")
             results = store.search("P-101 maintenance")
             self.assertEqual(results[0].document_name, "P-101-maintenance.txt")
+
+    def test_agent_searches_local_documents_and_returns_cited_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = DocumentStore(Path(directory) / "documents.db")
+            store.add_document(
+                "inspection.txt",
+                b"Pump P-101 inspection interval is every six months.",
+            )
+            tool_call = {
+                "id": "call-search",
+                "type": "function",
+                "function": {
+                    "name": "search_documents",
+                    "arguments": json.dumps({"query": "P-101 inspection"}),
+                },
+            }
+            refined_tool_call = {
+                "id": "call-refined-search",
+                "type": "function",
+                "function": {
+                    "name": "search_documents",
+                    "arguments": json.dumps({"query": "P-101 inspection interval"}),
+                },
+            }
+            responses = [
+                {"choices": [{"message": {"tool_calls": [tool_call]}}]},
+                {"choices": [{"message": {"tool_calls": [refined_tool_call]}}]},
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "Pump P-101 is inspected every six months [S1]."
+                            }
+                        }
+                    ]
+                },
+            ]
+
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                with patch("rag._agent_chat_completion", side_effect=responses):
+                    response = agentic_answer("When is P-101 inspected?", store)
+
+            self.assertIn("[S1]", response.answer)
+            self.assertEqual(
+                response.searches,
+                ["P-101 inspection", "P-101 inspection interval"],
+            )
+            self.assertEqual(response.sources[0].document_name, "inspection.txt")
+
+    def test_agent_search_limit_is_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = DocumentStore(Path(directory) / "documents.db")
+            with self.assertRaises(ValueError):
+                agentic_answer("Question", store, max_searches=0)
+
+    def test_chat_completion_uses_bearer_authentication(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"choices": []}'
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            with patch("rag.urllib.request.urlopen", return_value=response) as urlopen:
+                _agent_chat_completion({"messages": []})
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
 
 
 if __name__ == "__main__":

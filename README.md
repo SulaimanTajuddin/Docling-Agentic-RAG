@@ -1,15 +1,16 @@
-# Engineering Document Controller
+# Docling Agentic RAG
 
-A local-first RAG assistant for finding information in engineering documents. Upload documents, ask a question in plain language, and review the matching passages with their source filenames and locations.
+A local-first assistant for searching engineering documents. [Docling](https://github.com/docling-project/docling) converts PDFs, Word documents, and spreadsheets into Markdown; a lightweight local retriever finds evidence; and an optional tool-using LLM can refine its searches before answering with citations.
 
 ## Features
 
-- Upload PDF, DOCX, XLSX, CSV, TXT, and Markdown files.
-- Extract and chunk their text, then store the index locally in SQLite.
-- Retrieve relevant passages with local TF-IDF search; document contents stay on your machine during indexing and search.
-- Optionally generate a concise, source-grounded answer through an OpenAI-compatible chat-completions API.
-- See source citations for each answer and inspect the retrieved excerpts.
-- Avoid duplicate indexing when the same file is uploaded more than once.
+- Parse PDF, DOCX, and XLSX with Docling; read CSV, TXT, and Markdown directly.
+- OCR-capable PDF parsing through Docling.
+- Chunk and index documents in a local SQLite database.
+- Search locally with TF-IDF; document contents stay on your machine unless you enable a remote answer provider.
+- Let the assistant call the document-search tool up to three times to refine its retrieval.
+- Review source excerpts and citations alongside each answer.
+- Avoid duplicate indexing based on file content.
 
 ## Run locally
 
@@ -22,43 +23,35 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Open the local URL printed by Streamlit. Upload documents in the sidebar, then enter a question on the main page.
-
-Scanned PDFs are OCR'd automatically when a page has no extractable text. OCR
-requires the Tesseract executable to be installed separately and available on
-`PATH`. If it is installed outside `PATH`, set `TESSERACT_CMD` to its executable
-before starting the app:
-
-```powershell
-$env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
-python -m streamlit run app.py
-```
+Open the local URL printed by Streamlit. Upload documents in the sidebar, then ask a question. Docling may download its processing models on first use.
 
 The SQLite database is created at `data/documents.db` and is not committed to version control.
 
-## Optional answer generation
+## Enable agentic answers
 
-Without an API key, the app returns retrieved evidence excerpts and citations without generating an answer. To enable answer generation, set these environment variables before starting Streamlit:
+Without an API key, the app performs local retrieval and displays matching passages. To enable tool-calling answers, configure an OpenAI-compatible chat-completions provider that supports function calling:
 
 ```powershell
 $env:OPENAI_API_KEY = "your-api-key"
-# Optional overrides for an OpenAI-compatible provider:
+# Optional overrides:
 $env:OPENAI_BASE_URL = "https://api.openai.com/v1"
 $env:OPENAI_MODEL = "gpt-4o-mini"
 python -m streamlit run app.py
 ```
 
-When enabled, only the user's question and the retrieved excerpts are sent to the configured API. Do not enable this for confidential documents unless your organization's policies permit sending those excerpts to that provider. The API key is read from the environment and is not stored in the database.
+With agentic answers enabled, the assistant can search the indexed documents more than once, then answer from retrieved excerpts and cite sources such as `[S1]`. The API receives the question and retrieved excerpts. Do not enable this for confidential documents unless your organization's policies permit sending those excerpts to that provider. API keys are read from the environment and are not stored in the database.
 
-## Supported formats and limitations
+## Supported formats
 
-- PDF: text-based PDFs; scanned/image-only files need OCR before upload.
-- DOCX: paragraphs and tables.
-- XLSX: cell values grouped by worksheet.
-- CSV: rows and column values.
-- TXT and Markdown: plain text.
+| Format | Processing |
+| --- | --- |
+| PDF | Docling, including OCR-capable processing |
+| DOCX | Docling |
+| XLSX | Docling |
+| CSV | UTF-8 text parsing |
+| TXT, Markdown | UTF-8 text parsing |
 
-This starter app is intended for a local prototype or small collection. It does not interpret CAD drawings, enforce document permissions, or replace a controlled document-management system. Retrieval is lexical TF-IDF rather than a trained semantic embedding model, so include specific terms such as document numbers, equipment tags, or revision codes in questions when possible.
+This prototype does not interpret CAD drawings, enforce document permissions, or replace a controlled document-management system. Retrieval uses local TF-IDF rather than a trained semantic embedding model; include specific document numbers, equipment tags, or revision codes in questions when possible.
 
 ## Tests
 

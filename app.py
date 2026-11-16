@@ -3,12 +3,12 @@ from pathlib import Path
 
 import streamlit as st
 
-from rag import DocumentStore, SUPPORTED_EXTENSIONS, generate_answer
+from rag import DocumentStore, SUPPORTED_EXTENSIONS, agentic_answer
 
 
-st.set_page_config(page_title="Engineering Document Controller", page_icon="📚")
-st.title("Engineering Document Controller")
-st.caption("Find answers and source passages across your engineering documents.")
+st.set_page_config(page_title="Docling Agentic RAG", page_icon="📚")
+st.title("Docling Agentic RAG")
+st.caption("Research engineering documents with Docling and source-grounded retrieval.")
 
 store = DocumentStore(Path(__file__).parent / "data" / "documents.db")
 answer_generation_enabled = bool(os.getenv("OPENAI_API_KEY"))
@@ -20,8 +20,8 @@ with st.sidebar:
         type=sorted(extension.lstrip(".") for extension in SUPPORTED_EXTENSIONS),
         accept_multiple_files=True,
         help=(
-            "Supported: PDF, DOCX, XLSX, CSV, TXT, and Markdown. Scanned PDFs "
-            "are OCR'd when Tesseract is installed."
+            "Supported: PDF, DOCX, XLSX, CSV, TXT, and Markdown. Docling "
+            "extracts structured documents and supports scanned PDFs."
         ),
     )
     if uploads and st.button("Index uploaded documents"):
@@ -44,7 +44,7 @@ with st.sidebar:
         st.caption("Upload documents to get started.")
 
 if answer_generation_enabled:
-    st.info("AI answer generation is enabled. Retrieved excerpts will be sent to the configured API.")
+    st.info("Agentic answers are enabled. The model can search the local index more than once.")
 else:
     st.info("Local retrieval is ready. Set OPENAI_API_KEY to enable generated answers; without it, results stay local.")
 
@@ -59,29 +59,43 @@ if submitted:
     if not question.strip():
         st.warning("Enter a question or document reference to search.")
     else:
-        try:
-            results = store.search(question, limit=5)
-        except Exception as error:
-            st.error(f"Search failed: {error}")
-            results = []
+        response = None
+        if answer_generation_enabled:
+            try:
+                response = agentic_answer(question, store)
+                results = response.sources
+            except Exception as error:
+                st.error(f"Agentic search failed: {error}")
+                results = []
+        else:
+            try:
+                results = store.search(question, limit=5)
+            except Exception as error:
+                st.error(f"Search failed: {error}")
+                results = []
 
         if not results:
-            st.warning("No matching passages found. Try a document number, equipment tag, or another specific term.")
+            st.warning(
+                "No matching passages found. Try a document number, equipment "
+                "tag, or another specific term."
+            )
         else:
-            if answer_generation_enabled:
-                try:
-                    st.subheader("Answer")
-                    st.write(generate_answer(question, results))
-                except Exception as error:
-                    st.error(f"Answer generation failed: {error}")
+            if response:
+                st.subheader("Answer")
+                st.write(response.answer)
+                if response.searches:
+                    st.caption("Agent searches: " + " → ".join(response.searches))
             else:
                 st.subheader("Retrieved evidence")
-                st.write("Generated answers are disabled. Review these matching source passages:")
+                st.write(
+                    "Generated answers are disabled. Review these matching "
+                    "source passages:"
+                )
 
             st.subheader("Sources")
             for index, result in enumerate(results, start=1):
                 with st.expander(
-                    f"[{index}] {result.document_name} — {result.location} "
+                    f"[S{index}] {result.document_name} — {result.location} "
                     f"(match {result.score:.2f})"
                 ):
                     st.write(result.text)
